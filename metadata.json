@@ -1,0 +1,6 @@
+{
+  "name": "Wellness Reminder",
+  "description": "A lightweight, professional wellness reminder app for desk job professionals to drink water, walk, and stretch with interactive facts, customizable schedules, and smart snooze capabilities.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
