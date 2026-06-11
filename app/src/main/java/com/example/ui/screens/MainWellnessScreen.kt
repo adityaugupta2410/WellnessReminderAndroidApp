@@ -67,6 +67,7 @@ fun MainWellnessScreen(
 
     var activeTab by remember { mutableStateOf(0) }
     var showSplash by remember { mutableStateOf(true) }
+    var showProfileSheet by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         delay(2000)
@@ -111,6 +112,13 @@ fun MainWellnessScreen(
                         label = { Text("Logs", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
                         modifier = Modifier.testTag("nav_tab_logs")
                     )
+                    NavigationBarItem(
+                        selected = activeTab == 4,
+                        onClick = { activeTab = 4 },
+                        icon = { Icon(Icons.Default.TrendingUp, contentDescription = "Insights") },
+                        label = { Text("Insights", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
+                        modifier = Modifier.testTag("nav_tab_insights")
+                    )
                 }
             }
         ) { innerPadding ->
@@ -121,10 +129,15 @@ fun MainWellnessScreen(
                     .background(MaterialTheme.colorScheme.background)
             ) {
                 when (activeTab) {
-                    0 -> DashboardTab(viewModel, setting, timeLeftSeconds, isTimerRunning)
+                    0 -> DashboardTab(viewModel, setting, timeLeftSeconds, isTimerRunning, onProfileClick = { showProfileSheet = true })
                     1 -> ScheduleTab(viewModel, setting)
                     2 -> StretchesTab(viewModel)
                     3 -> LogsTab(viewModel, logs)
+                    4 -> InsightsTab(viewModel, logs)
+                }
+
+                if (showProfileSheet) {
+                    ProfileScreen(viewModel = viewModel, onDismiss = { showProfileSheet = false })
                 }
 
                 AnimatedVisibility(
@@ -177,7 +190,8 @@ fun DashboardTab(
     viewModel: ReminderViewModel,
     setting: ReminderSetting?,
     timeLeftSeconds: Int,
-    isTimerRunning: Boolean
+    isTimerRunning: Boolean,
+    onProfileClick: () -> Unit
 ) {
     LazyColumn(
         modifier = Modifier
@@ -187,26 +201,40 @@ fun DashboardTab(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         item {
-            // App Greeting
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            // App Greeting Row with Profile Action
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 4.dp, end = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "DESK VITALITY",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 2.sp
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "DESK VITALITY",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 2.sp
+                        )
                     )
-                )
-                Text(
-                    text = "Your Workspace Wellness Advocate",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    ),
-                    textAlign = TextAlign.Center
-                )
+                    Text(
+                        text = "Your Workspace Wellness Advocate",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+                }
+
+                IconButton(
+                    onClick = onProfileClick,
+                    modifier = Modifier.testTag("dashboard_profile_btn")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AccountCircle,
+                        contentDescription = "My Profile Hub",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(36.dp)
+                    )
+                }
             }
         }
 
@@ -2452,6 +2480,780 @@ fun LogsTab(
             }
         }
     }
+}
+
+@Composable
+fun InsightsTab(
+    viewModel: ReminderViewModel,
+    logs: List<ActivityLog>
+) {
+    var waterLoggedInput by remember { mutableStateOf(4) } // Default 4 glasses
+    var waterDateOffset by remember { mutableStateOf(0) } // 0 = Today, 1 = Yesterday, 2 = 2 Days Ago, 3 = 3 Days Ago
+    var logSuccessMessage by remember { mutableStateOf<String?>(null) }
+
+    // Core aggregation arithmetic
+    val aggregatedDays = remember(logs) {
+        val map = mutableMapOf<String, DayAggregate>()
+        val cal = Calendar.getInstance()
+        val df = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        val dfLabel = SimpleDateFormat("MMM d", Locale.getDefault())
+        
+        logs.forEach { log ->
+            cal.timeInMillis = log.timestamp
+            val dateString = df.format(cal.time)
+            val dateLabel = dfLabel.format(cal.time)
+            
+            val existing = map[dateString] ?: DayAggregate(
+                dateString = dateString,
+                timestamp = log.timestamp,
+                dateLabel = dateLabel,
+                waterGlasses = 0,
+                walkCount = 0,
+                skipCount = 0,
+                stretchCount = 0,
+                mindfulCount = 0
+            )
+            
+            val newAggregate = when (log.activityType) {
+                "WATER" -> {
+                    val count = if (log.notes.startsWith("GLASSES:")) {
+                        log.notes.removePrefix("GLASSES:").toIntOrNull() ?: 1
+                    } else {
+                        1
+                    }
+                    existing.copy(waterGlasses = existing.waterGlasses + count)
+                }
+                "WALK" -> existing.copy(walkCount = existing.walkCount + 1)
+                "SKIP" -> existing.copy(skipCount = existing.skipCount + 1)
+                "STRETCH" -> existing.copy(stretchCount = existing.stretchCount + 1)
+                "MINDFUL" -> existing.copy(mindfulCount = existing.mindfulCount + 1)
+                else -> existing
+            }
+            map[dateString] = newAggregate
+        }
+        map.values.sortedByDescending { it.timestamp }
+    }
+
+    var selectedDayStr by remember(aggregatedDays) {
+        mutableStateOf(aggregatedDays.firstOrNull()?.dateString ?: "")
+    }
+
+    val selectedDay = aggregatedDays.find { it.dateString == selectedDayStr } ?: aggregatedDays.firstOrNull()
+
+    // 6 Months Monthly Aggregations
+    val monthlyAverages = remember(aggregatedDays) {
+        val dfYearMonth = SimpleDateFormat("yyyy-MM", Locale.getDefault())
+        val dfMonthLabel = SimpleDateFormat("MMM", Locale.getDefault())
+        
+        // Ensure 6 months representation
+        val past6Months = (0..5).map { offset ->
+            val c = Calendar.getInstance()
+            c.add(Calendar.MONTH, -offset)
+            dfYearMonth.format(c.time) to dfMonthLabel.format(c.time)
+        }.reversed()
+        
+        past6Months.map { (yearMonth, label) ->
+            val daysInMonth = aggregatedDays.filter { dfYearMonth.format(java.util.Date(it.timestamp)) == yearMonth }
+            val avgWater = if (daysInMonth.isNotEmpty()) {
+                daysInMonth.map { it.waterGlasses }.average().toFloat()
+            } else {
+                0f
+            }
+            val totalWalks = daysInMonth.sumOf { it.walkCount }
+            val totalSkips = daysInMonth.sumOf { it.skipCount }
+            
+            Triple(label, avgWater, totalWalks)
+        }
+    }
+
+    val hasSufficientData = aggregatedDays.size >= 2
+
+    // Coroutine effect for timing out logged banner
+    LaunchedEffect(logSuccessMessage) {
+        if (logSuccessMessage != null) {
+            delay(3000)
+            logSuccessMessage = null
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Heading block
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Trends & Hydration",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "Analyze your 6-month wellness insights & water deficit.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (logs.isNotEmpty()) {
+                    IconButton(
+                        onClick = { viewModel.clearAllLogs() },
+                        modifier = Modifier.background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f), CircleShape)
+                    ) {
+                        Icon(Icons.Default.DeleteForever, contentDescription = "Clear database", tint = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+
+        // Hydration Logger form card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Quick Water Intake Log",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+
+                    // Pick Offset Date
+                    Text(
+                        text = "When did you drink this water?",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val offsets = listOf("Today", "Yesterday", "2 Days Ago", "3 Days Ago")
+                        offsets.forEachIndexed { index, label ->
+                            val selected = waterDateOffset == index
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                                    .clickable { waterDateOffset = index }
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+
+                    // Glass selection
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Amount of water (glasses):",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            IconButton(
+                                onClick = { if (waterLoggedInput > 1) waterLoggedInput-- },
+                                modifier = Modifier.background(MaterialTheme.colorScheme.secondaryContainer, CircleShape)
+                            ) {
+                                Icon(Icons.Default.Remove, contentDescription = "Less", tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                            }
+                            Text(
+                                text = "$waterLoggedInput",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            IconButton(
+                                onClick = { if (waterLoggedInput < 15) waterLoggedInput++ },
+                                modifier = Modifier.background(MaterialTheme.colorScheme.secondaryContainer, CircleShape)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "More", tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val oneDayMs = 24L * 60 * 60 * 1000
+                                val targetTimestamp = System.currentTimeMillis() - (waterDateOffset * oneDayMs)
+                                viewModel.logWaterIntake(waterLoggedInput, targetTimestamp)
+                                logSuccessMessage = "Successfully recorded $waterLoggedInput glasses for date!"
+                            },
+                            modifier = Modifier.weight(1f).height(48.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.WaterDrop, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Log Hydration", fontWeight = FontWeight.Bold)
+                        }
+                        
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.logWaterIntake(1, System.currentTimeMillis())
+                                logSuccessMessage = "Success: Logged 1 glass for Today!"
+                            },
+                            modifier = Modifier.height(48.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("+1 Glass (Now)", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+
+                    AnimatedVisibility(visible = logSuccessMessage != null) {
+                        logSuccessMessage?.let { msg ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = msg,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Insufficient data fallback vs Charts
+        if (!hasSufficientData) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Analytics,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(64.dp)
+                        )
+                        Text(
+                            text = "Awaiting Wellness Data Trends",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = "To generate compliance models, monthly ratios, and trends, the engine requires at least 2 consecutive days of wellness metrics. Alternatively, seed the database with mock history instantly below.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 20.sp
+                        )
+                        
+                        Button(
+                            onClick = { viewModel.generateSixMonthsMockData() },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Populate 6-Month Demo History", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        } else {
+            // Trend visualization card
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "6-Month Hydration & Walk Trends",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Average water (glasses) & total walks per month",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(MaterialTheme.colorScheme.primaryContainer)
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "180 Days",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+
+                        // Drawing Canvas chart
+                        val primaryColor = MaterialTheme.colorScheme.primary
+                        val secondaryColor = MaterialTheme.colorScheme.secondary
+                        val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
+                        val outlineColor = MaterialTheme.colorScheme.outlineVariant
+
+                        Canvas(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp)
+                                .padding(vertical = 8.dp)
+                        ) {
+                            val canvasWidth = size.width
+                            val canvasHeight = size.height
+                            
+                            val paddingLeft = 35.dp.toPx()
+                            val paddingBottom = 25.dp.toPx()
+                            val paddingTop = 10.dp.toPx()
+                            val paddingRight = 10.dp.toPx()
+
+                            val graphWidth = canvasWidth - paddingLeft - paddingRight
+                            val graphHeight = canvasHeight - paddingBottom - paddingTop
+
+                            // Draw horizontal grid lines (max expected water glasses average = 12)
+                            val maxVal = 12f
+                            val linesCount = 4
+                            for (l in 0..linesCount) {
+                                val gridY = paddingTop + graphHeight - (l * (graphHeight / linesCount))
+                                drawLine(
+                                    color = outlineColor.copy(alpha = 0.3f),
+                                    start = androidx.compose.ui.geometry.Offset(paddingLeft, gridY),
+                                    end = androidx.compose.ui.geometry.Offset(canvasWidth - paddingRight, gridY),
+                                    strokeWidth = 1.dp.toPx()
+                                )
+                            }
+
+                            // Render bars
+                            val barGroupCount = monthlyAverages.size
+                            if (barGroupCount > 0) {
+                                val groupWidth = graphWidth / barGroupCount
+                                val barSpacing = 4.dp.toPx()
+                                val barWidth = (groupWidth - barSpacing * 3) / 2
+
+                                monthlyAverages.forEachIndexed { index, (monthLabel, avgWater, totalWalks) ->
+                                    val groupCenterX = paddingLeft + index * groupWidth + (groupWidth / 2)
+                                    
+                                    // Water intake bar (Height relative to maxVal)
+                                    val waterBarHeight = (avgWater / maxVal) * graphHeight
+                                    val waterBarTop = paddingTop + graphHeight - waterBarHeight
+                                    val waterBarLeft = groupCenterX - barSpacing - barWidth
+                                    
+                                    drawRoundRect(
+                                        brush = Brush.verticalGradient(
+                                            colors = listOf(primaryColor, primaryColor.copy(alpha = 0.6f))
+                                        ),
+                                        topLeft = androidx.compose.ui.geometry.Offset(waterBarLeft, waterBarTop),
+                                        size = androidx.compose.ui.geometry.Size(barWidth, waterBarHeight),
+                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                                    )
+
+                                    // Walk bar (Scaled: standard reference = 40 walks/month)
+                                    val normalizedWalks = (totalWalks.toFloat() / 40f).coerceAtMost(1f)
+                                    val walkBarHeight = normalizedWalks * graphHeight
+                                    val walkBarTop = paddingTop + graphHeight - walkBarHeight
+                                    val walkBarLeft = groupCenterX + barSpacing
+                                    
+                                    drawRoundRect(
+                                        brush = Brush.verticalGradient(
+                                            colors = listOf(secondaryColor, secondaryColor.copy(alpha = 0.5f))
+                                        ),
+                                        topLeft = androidx.compose.ui.geometry.Offset(walkBarLeft, walkBarTop),
+                                        size = androidx.compose.ui.geometry.Size(barWidth, walkBarHeight),
+                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                                    )
+                                }
+                            }
+                        }
+
+                        // Text labels row below Canvas
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(start = 35.dp),
+                            horizontalArrangement = Arrangement.SpaceAround
+                        ) {
+                            monthlyAverages.forEach { (label, _, _) ->
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Chart legend
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(modifier = Modifier.size(10.dp).background(primaryColor, RoundedCornerShape(2.dp)))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Avg Water (Glasses)", style = MaterialTheme.typography.labelSmall, color = onSurfaceVariant)
+                            }
+                            Spacer(modifier = Modifier.width(20.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(modifier = Modifier.size(10.dp).background(secondaryColor, RoundedCornerShape(2.dp)))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Walk Activity", style = MaterialTheme.typography.labelSmall, color = onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Patterns & Insights panel
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Analytics, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Pattern & Habit Analysis",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Calc metrics
+                        val weekendAverages = remember(aggregatedDays) {
+                            val cal = Calendar.getInstance()
+                            val weekendDays = aggregatedDays.filter {
+                                cal.timeInMillis = it.timestamp
+                                val d = cal.get(Calendar.DAY_OF_WEEK)
+                                d == Calendar.SATURDAY || d == Calendar.SUNDAY
+                            }
+                            val weekdayDays = aggregatedDays.filter {
+                                cal.timeInMillis = it.timestamp
+                                val d = cal.get(Calendar.DAY_OF_WEEK)
+                                d != Calendar.SATURDAY && d != Calendar.SUNDAY
+                            }
+                            val avgWe = if (weekendDays.isNotEmpty()) weekendDays.map { it.waterGlasses }.average() else 0.0
+                            val avgWd = if (weekdayDays.isNotEmpty()) weekdayDays.map { it.waterGlasses }.average() else 0.0
+                            avgWe to avgWd
+                        }
+
+                        val cumulativeDeficit = remember(aggregatedDays) {
+                            // Target is 8 glasses per day
+                            aggregatedDays.sumOf { (8 - it.waterGlasses).coerceAtLeast(0) }
+                        }
+
+                        val completionRatios = remember(aggregatedDays) {
+                            val totalCompleted = logs.count { it.activityType in listOf("WATER", "WALK", "STRETCH", "MINDFUL") }
+                            val totalSkipped = logs.count { it.activityType == "SKIP" }
+                            val total = totalCompleted + totalSkipped
+                            if (total > 0) {
+                                (totalCompleted * 100) / total
+                            } else {
+                                100
+                            }
+                        }
+
+                        // Render metrics
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            // Insights 1: Weekend Dip
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Icon(Icons.Default.Opacity, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                Column {
+                                    Text("Weekend Hydration Variance", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                    val weVal = String.format(Locale.getDefault(), "%.1f", weekendAverages.first)
+                                    val wdVal = String.format(Locale.getDefault(), "%.1f", weekendAverages.second)
+                                    Text(
+                                        text = if (weekendAverages.first < weekendAverages.second - 1.0) {
+                                            "You drink ${weVal} glasses on weekends vs ${wdVal} glasses on weekdays. Try scheduling active hydration alarms on Saturdays!"
+                                        } else {
+                                            "Hydration consistency is superb! You maintain stable intake across both weekdays (${wdVal} glasses) and weekends (${weVal} glasses)."
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            // Insights 2: Deficit accumulation
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Icon(Icons.Default.LocalDrink, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                Column {
+                                    Text("Cumulative Target Deficit", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        text = if (cumulativeDeficit > 15) {
+                                            "Deficit Warning: You skipped a total of $cumulativeDeficit target glasses of water over the captured period. Place a bottle near your setup!"
+                                        } else {
+                                            "Keep going! Your hydration gap is minimal, with only $cumulativeDeficit glasses missing from standard target compliance."
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            // Insights 3: Break Completion Ratio
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Icon(Icons.Default.DirectionsRun, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(20.dp))
+                                Column {
+                                    Text("Active Break Completion Rate", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        text = "You successfully interact with and complete $completionRatios% of generated desk health alarms. Outstanding consistency!",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Interactive Day inspector list
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Daily Wellness Logs Timeline",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+
+                        // 7 Days scrollable select horizontal layout
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val displayDays = aggregatedDays.take(7)
+                            displayDays.forEach { record ->
+                                val isSelected = record.dateString == selectedDayStr
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                        .border(
+                                            1.dp,
+                                            if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                            RoundedCornerShape(12.dp)
+                                        )
+                                        .clickable { selectedDayStr = record.dateString }
+                                        .padding(vertical = 10.dp, horizontal = 4.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = record.dateLabel.split(" ").getOrNull(0) ?: "Day",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 9.sp
+                                        )
+                                        Text(
+                                            text = record.dateLabel.split(" ").getOrNull(1) ?: "",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Box(modifier = Modifier.size(5.dp).background(if (record.waterGlasses >= 8) Color(0xFF2196F3) else Color.Gray.copy(alpha = 0.5f), CircleShape))
+                                            Box(modifier = Modifier.size(5.dp).background(if (record.walkCount > 0) Color(0xFF4CAF50) else Color.Gray.copy(alpha = 0.5f), CircleShape))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Day inspector stats summary panel
+                        selectedDay?.let { day ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Details: ${day.dateLabel}",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        
+                                        val deficitVal = (8 - day.waterGlasses).coerceAtLeast(0)
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(100.dp))
+                                                .background(if (deficitVal == 0) Color(0xFFE8F5E9) else Color(0xFFFFF3E0))
+                                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = if (deficitVal == 0) "Target Hydrated!" else "$deficitVal Glass Deficit",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (deficitVal == 0) Color(0xFF2E7D32) else Color(0xFFE65100)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    // Metric breakdown rows
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        // Water metric
+                                        OutlinedCard(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Column(modifier = Modifier.padding(10.dp)) {
+                                                Icon(Icons.Default.WaterDrop, contentDescription = null, tint = Color(0xFF2196F3), modifier = Modifier.size(20.dp))
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text("Hydration", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("${day.waterGlasses} glasses", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+
+                                        // Walks metric
+                                        OutlinedCard(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Column(modifier = Modifier.padding(10.dp)) {
+                                                Icon(Icons.Default.DirectionsWalk, contentDescription = null, tint = Color(0xFF4CAF50), modifier = Modifier.size(20.dp))
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text("Walking", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("${day.walkCount} sessions", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+
+                                        // Skipped break metric
+                                        OutlinedCard(
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Column(modifier = Modifier.padding(10.dp)) {
+                                                Icon(Icons.Default.Cancel, contentDescription = null, tint = Color(0xFFE53935), modifier = Modifier.size(20.dp))
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text("Skips/Dismiss", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("${day.skipCount} breaks", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    // Walks Step Equivalent & Active Time text
+                                    Text(
+                                        text = "* Walk exercises represent ~${day.walkCount * 750} steps and ${day.walkCount * 10} minutes of metabolic activity breaks.",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Support definitions for aggregations
+data class DayAggregate(
+    val dateString: String,
+    val timestamp: Long,
+    val dateLabel: String,
+    val waterGlasses: Int,
+    val walkCount: Int,
+    val skipCount: Int,
+    val stretchCount: Int,
+    val mindfulCount: Int
+) {
+    fun mindfulCountPlusOne(): Int = mindfulCount + 1
 }
 
 @OptIn(ExperimentalLayoutApi::class)

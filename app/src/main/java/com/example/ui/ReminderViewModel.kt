@@ -14,6 +14,11 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.database.AppDatabase
 import com.example.data.entity.ActivityLog
 import com.example.data.entity.ReminderSetting
+import com.example.data.entity.LinkedDevice
+import com.example.data.entity.DeviceLog
+import com.example.data.service.GeminiHealthValidationService
+import com.example.data.service.ValidationResult
+import com.example.data.service.ExtractedLog
 import com.example.data.repository.ReminderRepository
 import com.example.ui.model.FactItem
 import com.example.ui.model.StretchItem
@@ -24,6 +29,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.util.Calendar
+
+sealed class ImportState {
+    object Idle : ImportState()
+    object Loading : ImportState()
+    data class Success(val summary: String, val logsCount: Int) : ImportState()
+    data class Error(val message: String) : ImportState()
+}
 
 class ReminderViewModel(
     application: Application,
@@ -36,6 +48,16 @@ class ReminderViewModel(
 
     val logs: StateFlow<List<ActivityLog>> = repository.allLogsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val linkedDevices: StateFlow<List<LinkedDevice>> = repository.linkedDevicesFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val deviceLogs: StateFlow<List<DeviceLog>> = repository.deviceLogsFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _documentImportState = MutableStateFlow<ImportState>(ImportState.Idle)
+    val documentImportState: StateFlow<ImportState> = _documentImportState.asStateFlow()
+
 
     // Active alert/reminder popups inside the app
     private val _isAlertShowing = MutableStateFlow(false)
@@ -294,7 +316,88 @@ class ReminderViewModel(
 
     // Actions
     fun dismissAlert() {
+        viewModelScope.launch {
+            repository.logActivity("SKIP", "Dismissed or skipped a wellness break opportunity.")
+        }
         _isAlertShowing.value = false
+    }
+
+    fun logWaterIntake(glasses: Int, timestamp: Long = System.currentTimeMillis()) {
+        viewModelScope.launch {
+            repository.saveLog(ActivityLog(activityType = "WATER", notes = "GLASSES:$glasses", timestamp = timestamp))
+        }
+    }
+
+    fun logActivityWithTimestamp(type: String, notes: String, timestamp: Long) {
+        viewModelScope.launch {
+            repository.saveLog(ActivityLog(activityType = type, notes = notes, timestamp = timestamp))
+        }
+    }
+
+    fun generateSixMonthsMockData() {
+        viewModelScope.launch {
+            repository.clearLogs()
+            val now = System.currentTimeMillis()
+            val oneDayMs = 24L * 60 * 60 * 1000
+            val calendar = Calendar.getInstance()
+            
+            // Over the last 180 days
+            for (i in 180 downTo 0) {
+                val targetDayMs = now - (i * oneDayMs)
+                calendar.timeInMillis = targetDayMs
+                val dayOfWeek = calendar.get(Calendar.DAY_OF_WEEK)
+                val isWeekend = dayOfWeek == Calendar.SATURDAY || dayOfWeek == Calendar.SUNDAY
+                
+                // Hydration: weekends are 2-6 glasses, weekdays are 5-11 glasses
+                val randomGlasses = if (isWeekend) {
+                    (2..6).random()
+                } else {
+                    (5..11).random()
+                }
+                
+                repository.saveLog(ActivityLog(
+                    activityType = "WATER",
+                    notes = "GLASSES:$randomGlasses",
+                    timestamp = targetDayMs + (10L * 60L * 60L * 1000L) // 10 AM
+                ))
+                
+                // Walks: weekends 0-1, weekdays 1-3
+                val walkCount = if (isWeekend) (0..1).random() else (1..3).random()
+                for (w in 0 until walkCount) {
+                    repository.saveLog(ActivityLog(
+                        activityType = "WALK",
+                        notes = "Completed light walking session.",
+                        timestamp = targetDayMs + ((11L + w * 2L) * 60L * 60L * 1000L)
+                    ))
+                }
+
+                // Skipped breaks: weekends 0-1, weekdays 0-3
+                val skipCount = if (isWeekend) (0..1).random() else (0..3).random()
+                for (s in 0 until skipCount) {
+                    repository.saveLog(ActivityLog(
+                        activityType = "SKIP",
+                        notes = "Dismissed or skipped a wellness break opportunity.",
+                        timestamp = targetDayMs + ((9L + s * 3L) * 60L * 60L * 1000L)
+                    ))
+                }
+
+                // Other breaks
+                if (Math.random() < 0.6) {
+                    repository.saveLog(ActivityLog(
+                        activityType = "STRETCH",
+                        notes = "Completed desk stretch",
+                        timestamp = targetDayMs + (15L * 60L * 60L * 1000L)
+                    ))
+                }
+                if (Math.random() < 0.4) {
+                    repository.saveLog(ActivityLog(
+                        activityType = "MINDFUL",
+                        notes = "Completed quick deep breathing session",
+                        timestamp = targetDayMs + (17L * 60L * 60L * 1000L)
+                    ))
+                }
+            }
+        }
     }
 
     fun completeReminder(category: String) {
@@ -461,6 +564,232 @@ class ReminderViewModel(
             repository.clearLogs()
         }
     }
+
+    private fun getTodayString(): String {
+        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+        return sdf.format(java.util.Date())
+    }
+
+    // --- Third-Party Devices Operations ---
+
+    fun linkDevice(name: String, type: String) {
+        viewModelScope.launch {
+            val deviceId = "DEV_${(1000..9999).random()}"
+            val newDevice = LinkedDevice(
+                id = deviceId,
+                deviceName = name,
+                deviceType = type,
+                isConnected = true,
+                batteryPercent = (65..99).random()
+            )
+            repository.saveDevice(newDevice)
+            
+            // Log connection event in hidden admin log
+            repository.saveDeviceLog(
+                DeviceLog(
+                    deviceId = deviceId,
+                    deviceName = name,
+                    dataType = "CONNECTION",
+                    value = "Successful Bluetooth/App pairing link established",
+                    dateStr = getTodayString()
+                )
+            )
+        }
+    }
+
+    fun unlinkDevice(deviceId: String, deviceName: String) {
+        viewModelScope.launch {
+            repository.removeDevice(deviceId)
+            
+            // Log removal event in hidden admin log
+            repository.saveDeviceLog(
+                DeviceLog(
+                    deviceId = deviceId,
+                    deviceName = deviceName,
+                    dataType = "CONNECTION",
+                    value = "Device unlinked and hardware session closed",
+                    dateStr = getTodayString()
+                )
+            )
+        }
+    }
+
+    fun syncDeviceData(deviceId: String, deviceName: String, deviceType: String) {
+        viewModelScope.launch {
+            val nowMs = System.currentTimeMillis()
+            val todayStr = getTodayString()
+
+            // Update sync timestamp on device
+            val device = repository.getDeviceById(deviceId)
+            if (device != null) {
+                repository.saveDevice(device.copy(lastSyncTime = nowMs, batteryPercent = (40..95).random()))
+            }
+
+            // Generate realistic mock telemetry to show collective info
+            val randomChoice = (0..2).random()
+            if (randomChoice == 0) {
+                // Steps sync
+                val steps = (2000..5000).random()
+                // Admin log
+                repository.saveDeviceLog(
+                    DeviceLog(
+                        deviceId = deviceId,
+                        deviceName = deviceName,
+                        dataType = "STEPS",
+                        value = "$steps steps sync",
+                        dateStr = todayStr
+                    )
+                )
+                // App-level physical activity log
+                repository.saveLog(
+                    ActivityLog(
+                        activityType = "WALK",
+                        notes = "Walk workout synced from $deviceName: $steps steps detected.",
+                        timestamp = nowMs
+                    )
+                )
+            } else if (randomChoice == 1) {
+                // Water intake sync
+                val extraGlasses = (2..4).random()
+                // Admin log
+                repository.saveDeviceLog(
+                    DeviceLog(
+                        deviceId = deviceId,
+                        deviceName = deviceName,
+                        dataType = "WATER",
+                        value = "$extraGlasses glasses sync",
+                        dateStr = todayStr
+                    )
+                )
+                // App-level physical activity log
+                repository.saveLog(
+                    ActivityLog(
+                        activityType = "WATER",
+                        notes = "GLASSES:$extraGlasses",
+                        timestamp = nowMs
+                    )
+                )
+            } else {
+                // Exercise/Yoga workout sync
+                val durationMins = listOf(15, 30, 45, 60).random()
+                val workoutType = listOf("Vinyasa Yoga", "Cardio Blast", "Pilates", "Deep Core Flow").random()
+                // Admin log
+                repository.saveDeviceLog(
+                    DeviceLog(
+                        deviceId = deviceId,
+                        deviceName = deviceName,
+                        dataType = "WORKOUT",
+                        value = "$durationMins mins $workoutType",
+                        dateStr = todayStr
+                    )
+                )
+                // App-level physical activity log
+                repository.saveLog(
+                    ActivityLog(
+                        activityType = "WORKOUT_YOGA",
+                        notes = "Finished $durationMins mins of $workoutType (Synced from $deviceName)",
+                        timestamp = nowMs
+                    )
+                )
+            }
+        }
+    }
+
+    // --- AI-Verified Health Document Imports ---
+
+    fun importHealthDocument(fileName: String, fileType: String, content: String) {
+        viewModelScope.launch {
+            _documentImportState.value = ImportState.Loading
+            
+            val result = GeminiHealthValidationService.validateAndExtractHealthData(fileName, fileType, content)
+            
+            _documentImportState.value = if (result.isValid) {
+                val todayStr = getTodayString()
+                
+                // Write each extracted metric into low-level sync logs (for admin) AND general activity logs (collective)
+                result.extractedLogs.forEach { ext ->
+                    repository.saveDeviceLog(
+                        DeviceLog(
+                            deviceId = "DOC_IMPORT",
+                            deviceName = "Doc: $fileName",
+                            dataType = ext.type,
+                            value = ext.value,
+                            dateStr = todayStr,
+                            status = "SUCCESS"
+                        )
+                    )
+
+                    // Map to core activity types
+                    when (ext.type.uppercase()) {
+                        "WATER" -> {
+                            val glasses = ext.value.filter { it.isDigit() }.toIntOrNull() ?: 2
+                            repository.saveLog(
+                                ActivityLog(
+                                    activityType = "WATER",
+                                    notes = "GLASSES:$glasses",
+                                    timestamp = ext.timestamp
+                                )
+                            )
+                        }
+                        "STEPS", "WALK" -> {
+                            repository.saveLog(
+                                ActivityLog(
+                                    activityType = "WALK",
+                                    notes = "Imported physical activity (${ext.value}): ${ext.notes}",
+                                    timestamp = ext.timestamp
+                                )
+                            )
+                        }
+                        "YOGA", "WORKOUT" -> {
+                            repository.saveLog(
+                                ActivityLog(
+                                    activityType = "WORKOUT_YOGA",
+                                    notes = "Imported workout: ${ext.value}. (${ext.notes})",
+                                    timestamp = ext.timestamp
+                                )
+                            )
+                        }
+                        "BLOOD_PRESSURE", "HEART_RATE" -> {
+                            // Save clinical vitals as descriptive stretch or custom wellness spot entry
+                            repository.saveLog(
+                                ActivityLog(
+                                    activityType = "CLINICAL_VITAL",
+                                    notes = "Vitals check: ${ext.value} (${ext.notes})",
+                                    timestamp = ext.timestamp
+                                )
+                            )
+                        }
+                    }
+                }
+                
+                ImportState.Success(result.summary, result.extractedLogs.size)
+            } else {
+                // Log failed AI import attempt for admin audit logs
+                repository.saveDeviceLog(
+                    DeviceLog(
+                        deviceId = "DOC_IMPORT",
+                        deviceName = "Doc: $fileName",
+                        dataType = "IMPORT_FAILED",
+                        value = "REJECTED_BY_AI: ${result.rejectionReason}",
+                        dateStr = getTodayString(),
+                        status = "REJECTED_BY_AI"
+                    )
+                )
+                ImportState.Error(result.rejectionReason)
+            }
+        }
+    }
+
+    fun resetImportState() {
+        _documentImportState.value = ImportState.Idle
+    }
+
+    fun clearAllDeviceLogs() {
+        viewModelScope.launch {
+            repository.clearDeviceLogs()
+        }
+    }
+
 }
 
 // Factory to inject repository and application context

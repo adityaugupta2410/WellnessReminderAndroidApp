@@ -27,6 +27,30 @@ data class ReminderSetting(
 data class ActivityLog(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val timestamp: Long = System.currentTimeMillis(),
-    val activityType: String, // "WATER", "WALK", "STRETCH", "SNOOZE"
+    val activityType: String, // "WATER", "WALK", "STRETCH", "SNOOZE", "WORKOUT_YOGA"
     val notes: String = ""
 )
+
+@Entity(tableName = "linked_devices")
+data class LinkedDevice(
+    @PrimaryKey val id: String,
+    val deviceName: String,
+    val deviceType: String, // "WATCH", "RING", "HEALTH_APP"
+    val isConnected: Boolean = true,
+    val pairedDate: Long = System.currentTimeMillis(),
+    val lastSyncTime: Long = System.currentTimeMillis(),
+    val batteryPercent: Int = 85
+)
+
+@Entity(tableName = "device_logs")
+data class DeviceLog(
+    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val deviceId: String,
+    val deviceName: String,
+    val timestamp: Long = System.currentTimeMillis(),
+    val dataType: String, // "STEPS", "WATER", "WORKOUT", "YOGA", "BLOOD_PRESSURE"
+    val value: String,
+    val status: String = "SUCCESS", // "SUCCESS", "REJECTED_BY_AI"
+    val dateStr: String
+)
+

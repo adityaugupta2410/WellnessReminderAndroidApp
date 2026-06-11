@@ -7,8 +7,11 @@ import androidx.room.RoomDatabase
 import com.example.data.dao.ReminderDao
 import com.example.data.entity.ActivityLog
 import com.example.data.entity.ReminderSetting
+import com.example.data.entity.LinkedDevice
+import com.example.data.entity.DeviceLog
 
-@Database(entities = [ReminderSetting::class, ActivityLog::class], version = 3, exportSchema = false)
+@Database(entities = [ReminderSetting::class, ActivityLog::class, LinkedDevice::class, DeviceLog::class], version = 4, exportSchema = false)
+
 abstract class AppDatabase : RoomDatabase() {
     abstract fun reminderDao(): ReminderDao
 
